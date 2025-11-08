@@ -1,22 +1,20 @@
-import 'dart:math';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:geolocator/geolocator.dart';
-
 
 void main() {
-  runApp(const MyApp());
+  runApp(const EcoMobileApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class EcoMobileApp extends StatelessWidget {
+  const EcoMobileApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Painel Clima & IQAR',
+      title: 'EcoMobile - Clima & IQAr',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
       home: const WeatherDashboard(),
@@ -33,58 +31,9 @@ class WeatherDashboard extends StatefulWidget {
 
 class _WeatherDashboardState extends State<WeatherDashboard> {
   final TextEditingController _controller = TextEditingController();
+  final String apiUrl = 'https://api.apsfinal.facul.allonsve.com';
   bool loading = false;
   Map<String, dynamic>? weatherData;
-
-  /// 🔹 Simula uma chamada de API com delay
-  Future<void> fetchMockData() async {
-    final city = _controller.text.trim();
-    if (city.isEmpty) return;
-
-    setState(() => loading = true);
-
-    await Future.delayed(const Duration(seconds: 1)); // simula delay da API
-    final rand = Random();
-
-    final mock = {
-      'city': city,
-      'temperature': 18 + rand.nextInt(15) + rand.nextDouble(),
-      'humidity': 40 + rand.nextInt(60),
-      'uvIndex': rand.nextDouble() * 12,
-      'condition': [
-        '☀️ Ensolarado',
-        '🌧️ Chuvoso',
-        '☁️ Nublado',
-        '🌫️ Neblina',
-      ][rand.nextInt(4)],
-      'windSpeed': (rand.nextDouble() * 20) + 2,
-      'windDirection': [
-        'N',
-        'NE',
-        'E',
-        'SE',
-        'S',
-        'SW',
-        'W',
-        'NW',
-      ][rand.nextInt(8)],
-      'airQuality': {
-        'pm2_5': (rand.nextDouble() * 150).toStringAsFixed(1),
-        'pm10': (rand.nextDouble() * 250).toStringAsFixed(1),
-      },
-    };
-
-    final air = mock['airQuality'] as Map<String, dynamic>;
-    final iqar = calcularIQAR(
-      double.parse(air['pm2_5']),
-      double.parse(air['pm10']),
-    );
-
-    setState(() {
-      weatherData = {...mock, 'iqar': iqar};
-      loading = false;
-    });
-  }
 
   Future<Position?> getCurrentPosition() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -117,6 +66,7 @@ class _WeatherDashboardState extends State<WeatherDashboard> {
       locationSettings: locationSettings,
     );
   }
+
   String? errorMessage; // null = sem erro
 
   Future<void> fetchCityOrCoords() async {
@@ -143,85 +93,93 @@ class _WeatherDashboardState extends State<WeatherDashboard> {
         queryParam = '?location=${Uri.encodeComponent(city)}';
       }
 
-      final url = Uri.parse('http://localhost:3000/location$queryParam');
+      final url = Uri.parse('$apiUrl/locationData$queryParam');
 
       final response = await http.get(
         url,
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: {'Content-Type': 'application/json'},
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        print('Response data: $data');
-        // TODO: update your weatherData here
+        final iqar = {
+          'valor': data['airQuality']['index'],
+          'classificacao':
+              '${data['airQuality']['category']} - Poluente Principal: ${data['airQuality']['mainPollutant']}',
+          'cor': parseIQArColor(data['airQuality']['index']),
+        };
+
+        switch (data['condition']) {
+          case 'Sun':
+            data['condition'] = '☀️ Ensolarado';
+            break;
+          case 'Clear':
+            data['condition'] = '🌞 Céu Limpo';
+          case 'Rain':
+            data['condition'] = '🌧️ Chuvoso';
+            break;
+          case 'Drizzle':
+            data['condition'] = '🌦️ Garoa';
+          case 'Clouds':
+            data['condition'] = '☁️ Nublado';
+            break;
+          case 'Fog':
+            data['condition'] = '🌫️ Neblina';
+            break;
+          default:
+            data['condition'] = '❓ Desconhecido (${data['condition']})';
+        }
+
+        setState(() {
+          weatherData = {
+            'city': data['location'],
+            'temperature': data['temperature'],
+            'humidity': data['humidity'],
+            'condition': data['condition'],
+            'windSpeed': data['windSpeed'],
+            'windDirection': data['windDirection'],
+            'uvIndex': data['uvData']['uvi'],
+            'iqar': iqar,
+          };
+          errorMessage = null;
+          loading = false;
+        });
       } else {
         setState(() {
-          errorMessage = 'Erro na API: ${response.statusCode}';
+          if (response.statusCode == 404) {
+            errorMessage =
+                'Dados climáticos não encontrados para esta localização.';
+          } else {
+            errorMessage =
+                'Erro ao obter dados climáticos: ${response.statusCode}';
+          }
+          loading = false;
         });
       }
     } catch (e) {
       setState(() {
         errorMessage = 'Erro: $e';
-      });
-    } finally {
-      setState(() {
         loading = false;
       });
     }
   }
 
-
-  /// 🔹 Calcula o índice IQAR conforme tabela do MMA
-  Map<String, dynamic> calcularIQAR(double pm25, double pm10) {
-    double indicePM25, indicePM10;
-
-    if (pm25 <= 15) {
-      indicePM25 = 40;
-    } else if (pm25 <= 50)
-      indicePM25 = 80;
-    else if (pm25 <= 75)
-      indicePM25 = 120;
-    else if (pm25 <= 125)
-      indicePM25 = 200;
-    else
-      indicePM25 = 400;
-
-    if (pm10 <= 45) {
-      indicePM10 = 40;
-    } else if (pm10 <= 100)
-      indicePM10 = 80;
-    else if (pm10 <= 150)
-      indicePM10 = 120;
-    else if (pm10 <= 250)
-      indicePM10 = 200;
-    else
-      indicePM10 = 400;
-
-    final iqar = max(indicePM25, indicePM10);
-
-    String classificacao;
+  Color parseIQArColor(int iqar) {
     Color cor;
 
     if (iqar <= 40) {
-      classificacao = 'Boa';
       cor = Colors.green;
     } else if (iqar <= 80) {
-      classificacao = 'Moderada';
       cor = Colors.yellow[700]!;
     } else if (iqar <= 120) {
-      classificacao = 'Ruim';
       cor = Colors.orange;
     } else if (iqar <= 200) {
-      classificacao = 'Muito Ruim';
       cor = Colors.red;
     } else {
-      classificacao = 'Péssima';
       cor = Colors.purple;
     }
 
-    return {'valor': iqar, 'classificacao': classificacao, 'cor': cor};
+    return cor;
   }
 
   /// 🔹 Widget para o gráfico circular (gauge)
@@ -291,7 +249,7 @@ class _WeatherDashboardState extends State<WeatherDashboard> {
     final weather = weatherData;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Painel Clima & IQAR')),
+      appBar: AppBar(title: const Text('EcoMobile - Clima & IQAr')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -306,17 +264,17 @@ class _WeatherDashboardState extends State<WeatherDashboard> {
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: loading ? null : fetchMockData,
+              onPressed: loading ? null : fetchCityOrCoords,
               icon: const Icon(Icons.search),
               label: loading
                   ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
                   : const Text('Buscar'),
             ),
             const SizedBox(height: 20),
@@ -325,7 +283,10 @@ class _WeatherDashboardState extends State<WeatherDashboard> {
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
                   errorMessage!,
-                  style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
 
@@ -359,7 +320,7 @@ class _WeatherDashboardState extends State<WeatherDashboard> {
                                 100,
                               ),
                               label:
-                              'IQAR\n${weather['iqar']['classificacao']}',
+                                  'IQAR\n${weather['iqar']['classificacao']}',
                               color: weather['iqar']['cor'],
                             ),
                           ],
